@@ -1,0 +1,199 @@
+{{- $authSecret := required "Set auth.existingSecret to a Secret containing three distinct tokens" .Values.auth.existingSecret -}}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "open-compute.fullname" . }}
+  labels:
+    {{- include "open-compute.labels" . | nindent 4 }}
+spec:
+  serviceName: {{ include "open-compute.fullname" . }}-headless
+  replicas: 1
+  updateStrategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      {{- include "open-compute.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+        {{- include "open-compute.selectorLabels" . | nindent 8 }}
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      initContainers:
+        - name: initialize
+          image: {{ include "open-compute.image" (dict "image" .Values.initImage "appVersion" .Chart.AppVersion) | quote }}
+          imagePullPolicy: {{ .Values.initImage.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.initSecurityContext | nindent 12 }}
+          env:
+            - name: OPEN_COMPUTE_ADMIN_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $authSecret }}
+                  key: {{ .Values.auth.adminKey }}
+            - name: OPEN_COMPUTE_DEPLOYER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $authSecret }}
+                  key: {{ .Values.auth.deployerKey }}
+            - name: OPEN_COMPUTE_READ_ONLY_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $authSecret }}
+                  key: {{ .Values.auth.readOnlyKey }}
+            - name: OC_PUBLIC_BIND
+              value: "0.0.0.0:8787"
+            - name: OC_PUBLIC_PORT
+              value: "8787"
+            - name: OC_STORAGE_BACKEND
+              value: {{ .Values.storage.backend | quote }}
+            {{- if eq .Values.storage.backend "s3" }}
+            - name: OC_S3_ENDPOINT
+              value: {{ required "storage.s3.endpoint is required for S3" .Values.storage.s3.endpoint | quote }}
+            - name: OC_S3_REGION
+              value: {{ .Values.storage.s3.region | quote }}
+            - name: OC_S3_BUCKET
+              value: {{ required "storage.s3.bucket is required for S3" .Values.storage.s3.bucket | quote }}
+            - name: OC_S3_PREFIX
+              value: {{ .Values.storage.s3.prefix | quote }}
+            - name: OC_S3_R2_PREFIX
+              value: {{ .Values.storage.s3.r2Prefix | quote }}
+            {{- include "open-compute.s3Env" . | nindent 12 }}
+            {{- end }}
+          resources:
+            {{- toYaml .Values.initResources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/open-compute
+              subPath: {{ .Values.persistence.subPath | quote }}
+            - name: tmp
+              mountPath: /tmp
+        - name: configure-origin
+          image: {{ include "open-compute.image" (dict "image" .Values.image "appVersion" .Chart.AppVersion) | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["/bin/sh", "/etc/open-compute/set-origin.sh"]
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          env:
+            - name: OC_ORIGIN_TOML
+              value: {{ .Values.config.publicOrigin | toJson | quote }}
+          resources:
+            {{- toYaml .Values.initResources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/open-compute
+              subPath: {{ .Values.persistence.subPath | quote }}
+            - name: config
+              mountPath: /etc/open-compute
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      containers:
+        - name: open-compute
+          image: {{ include "open-compute.image" (dict "image" .Values.image "appVersion" .Chart.AppVersion) | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["--no-update-check", "--system", "run"]
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: 8787
+              protocol: TCP
+          {{- if or (eq .Values.storage.backend "s3") .Values.extraEnv }}
+          env:
+            {{- include "open-compute.s3Env" . | nindent 12 }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- end }}
+          {{- with .Values.extraEnvFrom }}
+          envFrom:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          startupProbe:
+            httpGet:
+              path: /health/live
+              port: http
+            {{- toYaml .Values.startupProbe | nindent 12 }}
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: http
+            {{- toYaml .Values.livenessProbe | nindent 12 }}
+          readinessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -ec
+                - >-
+                  curl -fsS http://127.0.0.1:8787/health/ready >/dev/null &&
+                  /opt/open-compute/ocd --no-update-check --system instances --json |
+                  grep -Fq '"state":"running"'
+            {{- toYaml .Values.readinessProbe | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/open-compute
+              subPath: {{ .Values.persistence.subPath | quote }}
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: config
+          configMap:
+            name: {{ include "open-compute.fullname" . }}-config
+        {{- if not .Values.persistence.enabled }}
+        - name: data
+          emptyDir: {}
+        {{- else if .Values.persistence.existingClaim }}
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ .Values.persistence.existingClaim }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+  {{- if and .Values.persistence.enabled (not .Values.persistence.existingClaim) }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        {{- with .Values.persistence.annotations }}
+        annotations:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+      spec:
+        accessModes:
+          {{- toYaml .Values.persistence.accessModes | nindent 10 }}
+        {{- if ne .Values.persistence.storageClass nil }}
+        storageClassName: {{ .Values.persistence.storageClass | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.persistence.size }}
+  {{- end }}

@@ -1,0 +1,72 @@
+name: Helm CI
+
+on:
+  push:
+    branches: [ci, main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: helm-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint and render
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4.3.0
+        with:
+          version: v3.17.3
+      - name: Install YAML parser
+        run: python3 -m pip install PyYAML==6.0.2
+      - name: Lint example configurations
+        run: |
+          for values in charts/open-compute/ci/*-values.yaml; do
+            helm lint --strict charts/open-compute -f "$values"
+          done
+      - name: Check render and validation contracts
+        run: python3 .github/scripts/check-chart.py
+      - name: Package Chart
+        run: helm package charts/open-compute --destination dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: helm-chart
+          path: dist/*.tgz
+
+  kind:
+    name: Kind Kubernetes ${{ matrix.kubernetes }}
+    needs: lint
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        kubernetes: [v1.31.6, v1.32.2]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4.3.0
+        with:
+          version: v3.17.3
+      - uses: azure/setup-kubectl@v4
+        with:
+          version: ${{ matrix.kubernetes }}
+      - uses: helm/kind-action@v1.12.0
+        with:
+          version: v0.27.0
+          kubectl_version: ${{ matrix.kubernetes }}
+          cluster_name: open-compute-ci
+          node_image: kindest/node:${{ matrix.kubernetes }}
+      - name: Install and exercise the Chart
+        run: bash .github/scripts/kind-smoke.sh
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kind-${{ matrix.kubernetes }}-diagnostics
+          path: .test-output/
+          if-no-files-found: ignore

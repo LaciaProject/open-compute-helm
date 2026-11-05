@@ -1,0 +1,23 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "open-compute.fullname" . }}-config
+  labels:
+    {{- include "open-compute.labels" . | nindent 4 }}
+data:
+  set-origin.sh: |
+    #!/bin/sh
+    set -eu
+    umask 077
+    config=/var/lib/open-compute/instances/default/compute.toml
+    # Preserve the initialized database, keys, storage authority and registration.
+    # ENVIRON prevents awk from interpreting backslashes as command-line escapes.
+    trap 'rm -f "$config.helm-tmp"' EXIT
+    awk '
+      /^public_origin = / { $0 = "public_origin = " ENVIRON["OC_ORIGIN_TOML"]; artifacts++ }
+      /^external_control_origin = / { $0 = "external_control_origin = " ENVIRON["OC_ORIGIN_TOML"]; observability++ }
+      { print }
+      END { if (artifacts != 1 || observability != 1) exit 1 }
+    ' "$config" > "$config.helm-tmp"
+    /opt/open-compute/ocd --no-update-check --system --config "$config.helm-tmp" config check
+    mv "$config.helm-tmp" "$config"

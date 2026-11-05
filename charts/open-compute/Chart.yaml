@@ -1,0 +1,15 @@
+apiVersion: v2
+name: open-compute
+description: Single-node open-compute Workers platform with persistent storage
+type: application
+version: 0.1.0
+appVersion: "0.4.0"
+kubeVersion: ">=1.25.0-0"
+home: https://open-compute.dev
+sources:
+  - https://github.com/elliothux/open-compute
+  - https://github.com/LaciaProject/open-compute-helm
+keywords:
+  - workers
+  - cloudflare
+  - open-compute

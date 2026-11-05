@@ -1,0 +1,18 @@
+open-compute {{ .Chart.AppVersion }} is installed as a single-node StatefulSet.
+
+Access the API and Dashboard locally:
+  kubectl --namespace {{ .Release.Namespace }} port-forward svc/{{ include "open-compute.fullname" . }} 8787:{{ .Values.service.port }}
+
+Inspect the instance and get a one-time Dashboard URL:
+  kubectl --namespace {{ .Release.Namespace }} exec {{ include "open-compute.fullname" . }}-0 -c open-compute -- /opt/open-compute/ocd --no-update-check --system instances --json
+  kubectl --namespace {{ .Release.Namespace }} exec {{ include "open-compute.fullname" . }}-0 -c open-compute -- /opt/open-compute/ocd --no-update-check --system dashboard --no-open
+
+Auth Secret: {{ .Values.auth.existingSecret }}
+Tokens and object-storage settings are applied only to a NEW data directory.
+Changing the Secret does not rotate tokens already stored in the data directory.
+{{ if not .Values.persistence.enabled }}
+WARNING: persistence is disabled. Deleting this Pod deletes all instance data.
+{{ else }}
+Keep the PVC, instance master key and authentication Secret together when backing up.
+StatefulSet-managed PVCs are retained when the Helm release is uninstalled.
+{{ end }}

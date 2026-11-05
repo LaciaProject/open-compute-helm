@@ -1,0 +1,4 @@
+.test-output/
+dist/
+*.tgz
+__pycache__/
