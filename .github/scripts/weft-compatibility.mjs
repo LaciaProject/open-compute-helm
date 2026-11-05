@@ -49,7 +49,7 @@ async function request(path, {method = 'GET', host = '127.0.0.1:8787', body, con
     const client = url.protocol === 'https:' ? https : http;
     let receiving = false;
     const req = client.request(url, {method, agent: false, headers: {
-      host, authorization: `Bearer ${token}`,
+      host, ...(path.startsWith('/client/v4/') ? {authorization: `Bearer ${token}`} : {}),
       ...(body ? {'content-length': body.length} : {}),
       ...(contentType ? {'content-type': contentType} : {}),
     }}, res => {
@@ -162,7 +162,12 @@ try {
     });
     await check('Actual native plugin facet lifecycle and owner isolation', async () => {
       const source = `return {apply(ctx){const fs=ctx.get('fs');harness.handle('read',async()=>{const current=await fs.resolve('current');return {owner:current.owner,runId:current.runId};})}}`;
-      const call = async (owner, action, fields = {}) => success(await worker('weft-dynamic', '/native-plugin', {owner, action, ...fields}));
+      const call = async (owner, action, fields = {}) => {
+        const response = await worker('weft-dynamic', '/native-plugin', {owner, action, ...fields});
+        await writeFile(resolve(output, `native-plugin-${owner}-${action}.json`), JSON.stringify(response, null, 2));
+        assert.equal(response.status, 200, `${owner}/${action}: HTTP ${response.status}: ${response.text}`);
+        return response.json;
+      };
       const first = await call('alpha', 'start', {source});
       const alpha = await call('alpha', 'invoke', {method: 'read'});
       assert.equal(alpha.runId, first.runId);
@@ -182,13 +187,6 @@ try {
     });
   }
 
-  await check('Unmodified Weft main Worker module admission', async () => {
-    const path = resolve(weft, 'dist/worker.js');
-    const bytes = (await stat(path)).size;
-    const response = await upload('weft-full-import', await readFile(path));
-    assert.equal(response.status, 200, `${bytes} bytes; HTTP ${response.status}: ${response.text}`);
-    return `${bytes} byte module admitted. This checks import admission, not the complete application bindings.`;
-  });
   await check('Weft tracing configuration admission', async () => {
     success(await upload('weft-tracing', 'export default {fetch(){return new Response("ok")}}', {
       observability: {enabled: true, logs: {enabled: true, head_sampling_rate: 1, invocation_logs: false},
@@ -203,15 +201,29 @@ try {
     assert.ok(policy.includes('["Binds", "Devices", "VolumesFrom", "DeviceRequests"]') && policy.includes('role == "application"') && policy.includes('value != &json!([])'), 'Pinned Broker policy changed; review the boundary.');
     throw new Error('Weft real FUSE tests require /dev/fuse and SYS_ADMIN; the current Broker rejects application device mounts and added capabilities. No policy bypass was enabled.');
   });
-  if (process.env.WEFT_CONTAINER_IMAGE) await check('Actual computerd FUSE mount under unprivileged container settings', async () => {
+  let computerResult;
+  if (process.env.WEFT_CONTAINER_IMAGE) await check('Actual computerd startup without FUSE device/capability grants', async () => {
     const command = `set -eu; /usr/local/bin/computerd > /tmp/computerd.log 2>&1 & child=$!; trap 'kill "$child" 2>/dev/null || true' EXIT; for i in $(seq 1 10); do if mountpoint -q /workspace; then echo FUSE_MOUNTED; exit 0; fi; if ! kill -0 "$child" 2>/dev/null; then cat /tmp/computerd.log; exit 70; fi; sleep 1; done; cat /tmp/computerd.log; echo FUSE_NOT_MOUNTED; exit 71`;
-    const result = spawnSync('docker', ['run', '--rm', '--network', 'none', '--cap-drop', 'NET_RAW', '--security-opt', 'no-new-privileges:true',
+    computerResult = spawnSync('docker', ['run', '--rm', '--network', 'none', '--cap-drop', 'NET_RAW', '--security-opt', 'no-new-privileges:true',
       '-e', 'RPC_CLIENT_SECRET=weft-ci-computerd-fixture', '-e', 'FUSE_MOUNT=auto', '-e', 'COMPUTERD_DB=/var/lib/computerd/state.db',
       '--entrypoint', '/bin/sh', process.env.WEFT_CONTAINER_IMAGE, '-ec', command], {encoding: 'utf8', timeout: 30_000, maxBuffer: 1024 * 1024});
-    await writeFile(resolve(output, 'computerd.log'), `${result.stdout ?? ''}\n${result.stderr ?? ''}`);
-    assert.equal(result.status, 0, `computerd could not mount /workspace without device/capability grants; exit=${result.status}. See computerd.log.`);
-    assert.match(result.stdout, /FUSE_MOUNTED/);
-    return 'Real computerd mounted its workspace without additional container privileges.';
+    await writeFile(resolve(output, 'computerd.log'), `${computerResult.stdout ?? ''}\n${computerResult.stderr ?? ''}`);
+    assert.match(computerResult.stdout ?? '', /computerd listening on/, 'computerd did not start; see computerd.log.');
+    return /backend=shim/.test(computerResult.stdout) ? 'computerd started using its shim fallback. This does not establish Weft processd/PTY filesystem synchronization.' : 'computerd started; see computerd.log for selected backend.';
+  });
+  if (computerResult) await check('Actual POSIX FUSE workspace mount used by Weft container regressions', async () => {
+    assert.equal(computerResult.status, 0, `No POSIX FUSE mount without device/capability grants; exit=${computerResult.status}. A running shim fallback is not a FUSE mount; processd/PTY integration needs separate verification. See computerd.log.`);
+    assert.match(computerResult.stdout, /FUSE_MOUNTED/);
+    return 'Real computerd mounted /workspace without additional container privileges.';
+  });
+  // An early upload rejection can close kubectl port-forward's streaming connection.
+  // Keep the oversized-module probe last so that it cannot invalidate other checks.
+  await check('Unmodified Weft main Worker module admission', async () => {
+    const path = resolve(weft, 'dist/worker.js');
+    const bytes = (await stat(path)).size;
+    const response = await upload('weft-full-import', await readFile(path));
+    assert.equal(response.status, 200, `${bytes} bytes; HTTP ${response.status}: ${response.text}`);
+    return `${bytes} byte module admitted. This checks import admission, not the complete application bindings.`;
   });
 } catch (error) {
   report.checks.push({name: 'Verification infrastructure', status: 'blocked', detail: String(error.message)});

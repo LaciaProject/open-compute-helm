@@ -34,6 +34,10 @@ that source checkout.
 Reports and Kubernetes logs are uploaded as the `weft-compatibility` artifact.
 `report.json` and `report.md` identify passed probes and blockers separately.
 The audit does not enable privileged mode or relax the Broker's device policy.
+Computerd startup and an actual POSIX FUSE mount are reported separately:
+`FUSE_MOUNT=auto` can select a shim backend and start successfully without
+mounting `/workspace`. That fallback needs separate Weft processd/file-sync/PTY
+integration testing; startup alone does not establish workspace compatibility.
 
 ## Local use
 
