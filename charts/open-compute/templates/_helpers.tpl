@@ -3,12 +3,13 @@
 {{- end -}}
 
 {{- define "open-compute.fullname" -}}
+{{- /* Reserve nine characters for the headless Service suffix. */ -}}
 {{- if .Values.fullnameOverride -}}
-{{- .Values.fullnameOverride | trunc 63 | trimSuffix "-" -}}
+{{- .Values.fullnameOverride | trunc 54 | trimSuffix "-" -}}
 {{- else if contains (include "open-compute.name" .) .Release.Name -}}
-{{- .Release.Name | trunc 63 | trimSuffix "-" -}}
+{{- .Release.Name | trunc 54 | trimSuffix "-" -}}
 {{- else -}}
-{{- printf "%s-%s" .Release.Name (include "open-compute.name" .) | trunc 63 | trimSuffix "-" -}}
+{{- printf "%s-%s" .Release.Name (include "open-compute.name" .) | trunc 54 | trimSuffix "-" -}}
 {{- end -}}
 {{- end -}}
 

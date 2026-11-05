@@ -17,9 +17,43 @@ diagnostics() {
   kubectl get events -n "$namespace" --sort-by=.metadata.creationTimestamp > "$evidence/events.txt" 2>&1 || true
   for container in initialize configure-origin open-compute; do
     kubectl logs -n "$namespace" "$pod" -c "$container" > "$evidence/$container.log" 2>&1 || true
+    kubectl logs -n "$namespace" "$pod" -c "$container" --previous > "$evidence/$container-previous.log" 2>&1 || true
   done
-  kubectl exec -n "$namespace" "$pod" -c open-compute -- \
-    cat /var/lib/open-compute/init-daemon.log > "$evidence/bootstrap.log" 2>&1 || true
+  if ! kubectl exec -n "$namespace" "$pod" -c open-compute -- \
+    cat /var/lib/open-compute/init-daemon.log > "$evidence/bootstrap.log" 2>&1 && [[ "$result" != 0 ]]; then
+    # The main container may never have started. Read the preserved volume from
+    # another non-root Pod on the same node (also works with ReadWriteOnce).
+    node=$(kubectl get pod "$pod" -n "$namespace" -o jsonpath='{.spec.nodeName}')
+    kubectl apply -n "$namespace" -f - <<YAML
+apiVersion: v1
+kind: Pod
+metadata:
+  name: volume-inspect
+spec:
+  nodeName: "$node"
+  restartPolicy: Never
+  automountServiceAccountToken: false
+  securityContext:
+    runAsUser: 65532
+    runAsGroup: 65532
+  containers:
+    - name: inspect
+      image: ghcr.io/elliothux/open-compute:0.4.0
+      command: [/bin/sh, -ec, "cat /var/lib/open-compute/init-daemon.log"]
+      volumeMounts:
+        - name: data
+          mountPath: /var/lib/open-compute
+          subPath: open-compute
+          readOnly: true
+  volumes:
+    - name: data
+      persistentVolumeClaim:
+        claimName: data-open-compute-0
+YAML
+    kubectl wait -n "$namespace" pod/volume-inspect --for=jsonpath='{.status.phase}'=Succeeded --timeout=60s || true
+    kubectl logs -n "$namespace" volume-inspect > "$evidence/bootstrap.log" 2>&1 || true
+    cat "$evidence/initialize.log" "$evidence/initialize-previous.log" "$evidence/bootstrap.log"
+  fi
   exit "$result"
 }
 trap diagnostics EXIT
@@ -33,8 +67,28 @@ kubectl create secret generic open-compute-auth -n "$namespace" \
   --from-literal=read-only-token="ci-reader-literal-'\$-token"
 
 helm install "$release" "$root/charts/open-compute" -n "$namespace" \
-  --set auth.existingSecret=open-compute-auth --set persistence.size=2Gi \
-  --wait --timeout 10m
+  --set auth.existingSecret=open-compute-auth --set persistence.size=2Gi
+
+# Upstream intentionally refuses to retry a partially initialized data directory.
+# Fail promptly and collect the original bootstrap log instead of waiting ten minutes.
+ready=false
+for ((attempt=0; attempt<200; attempt++)); do
+  if kubectl get pod "$pod" -n "$namespace" -o json > "$evidence/pod-status.json" 2>/dev/null; then
+    state=$(python3 - "$evidence/pod-status.json" <<'PY'
+import json,sys
+status=json.load(open(sys.argv[1])).get('status',{})
+failed=any(c.get('restartCount',0)>0 or c.get('state',{}).get('terminated',{}).get('exitCode',0)!=0
+           for c in status.get('initContainerStatuses',[]))
+ready=any(c['type']=='Ready' and c['status']=='True' for c in status.get('conditions',[]))
+print('failed' if failed else 'ready' if ready else 'waiting')
+PY
+)
+    if [[ "$state" == failed ]]; then echo "Initialization failed; collecting preserved-volume logs." >&2; exit 1; fi
+    if [[ "$state" == ready ]]; then ready=true; break; fi
+  fi
+  sleep 3
+done
+test "$ready" = true
 
 exec_oc() { kubectl exec -n "$namespace" "$pod" -c open-compute -- "$@"; }
 api() {
@@ -84,9 +138,14 @@ echo "Installation, Service DNS, authentication roles and KV writes passed."
 # Recreate the whole Pod so init containers run again against the retained PVC.
 old_uid=$(kubectl get pod "$pod" -n "$namespace" -o jsonpath='{.metadata.uid}')
 kubectl delete pod "$pod" -n "$namespace" --wait=true
-kubectl rollout status statefulset/"$release" -n "$namespace" --timeout=5m
-new_uid=$(kubectl get pod "$pod" -n "$namespace" -o jsonpath='{.metadata.uid}')
+for ((attempt=0; attempt<120; attempt++)); do
+  new_uid=$(kubectl get pod "$pod" -n "$namespace" -o jsonpath='{.metadata.uid}' 2>/dev/null || true)
+  if [[ -n "$new_uid" && "$new_uid" != "$old_uid" ]]; then break; fi
+  sleep 1
+done
+test -n "$new_uid"
 test "$old_uid" != "$new_uid"
+kubectl wait -n "$namespace" pod/"$pod" --for=condition=Ready --timeout=5m
 exec_oc /opt/open-compute/ocd --no-update-check --system instances --json > "$evidence/instances-after.json"
 exec_oc sha256sum /var/lib/open-compute/instances/default/data/keys/master.key > "$evidence/key-after.txt"
 cmp "$evidence/key-before.txt" "$evidence/key-after.txt"

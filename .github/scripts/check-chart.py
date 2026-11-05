@@ -83,6 +83,11 @@ docs = render({"fullnameOverride": "custom", "service": {"type": "NodePort", "po
 service = next(d for d in docs if d["kind"] == "Service" and d["metadata"]["name"] == "custom")
 assert service["spec"]["ports"][0]["nodePort"] == 30787
 
+# StatefulSet Pod names and all Service names must fit a DNS label, including suffixes.
+docs = render({"fullnameOverride": "long-" + "x" * 58})
+assert len(workload(docs)["metadata"]["name"] + "-0") <= 63
+assert all(len(d["metadata"]["name"]) <= 63 for d in docs if d["kind"] == "Service")
+
 for values in [
     {"replicaCount": 2},
     {"auth": {"existingSecret": ""}},
