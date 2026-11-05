@@ -148,6 +148,8 @@ kubectl logs -n open-compute open-compute-0 -c open-compute
 4. 删除 Pod，验证实例 ID、主密钥、KV 数据保留且初始化不会重做。
 5. 执行 Helm 升级验证 origin 变更，卸载后确认 PVC 保留；上传诊断日志和 Chart 包。
 
+另外，[Weft compatibility](.github/workflows/weft-compatibility.yaml) 在 `ci` 分支验证固定版本 Weft 的真实依赖及运行时兼容性。它会单独报告通过项和阻塞项；存在阻塞时任务失败，不能以 Helm 安装通过代替 Weft 应用兼容性。范围与运行方式见 [Weft 验证说明](docs/weft-compatibility.md)。
+
 本地静态检查：
 
 ```bash

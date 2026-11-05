@@ -1,0 +1,13 @@
+{
+  "weft": {
+    "repository": "lacia-hIE/Weft",
+    "ref": "f8a080983471e6fa627968d9b9c1d26121b23286"
+  },
+  "openComputeSource": {
+    "repository": "elliothux/open-compute",
+    "ref": "b84d49cc9a9cb60b4e83365a3b2690be9c3aeb36"
+  },
+  "runtimeImage": "ghcr.io/elliothux/open-compute:0.4.0@sha256:cbb02107d451b0f44e38b991f30295cf64acb3eb0dacc114e42d565c191f461d",
+  "initImage": "ghcr.io/elliothux/open-compute-init:0.4.0@sha256:519658d7d7aa71a1eb7062d75f65c0883dff0940905143108e05d892083de6ed",
+  "runtimeVersion": "0.4.0"
+}
