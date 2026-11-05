@@ -70,3 +70,4 @@ jobs:
           name: kind-${{ matrix.kubernetes }}-diagnostics
           path: .test-output/
           if-no-files-found: ignore
+          include-hidden-files: true
